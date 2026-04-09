@@ -49,7 +49,7 @@ dnf install -y \
   python3 \
   mesa-libGL libSM libXext libXrender \
   libjpeg-devel libpng-devel libtiff-devel zlib-devel \
-  giflib-devel libwebp-devel \
+  giflib-devel libwebp-devel libcurl-devel \
   || fail "some system packages unavailable"
 
 # ---------------------------------------------------------------------------
