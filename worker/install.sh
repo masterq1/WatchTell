@@ -1,69 +1,126 @@
 #!/usr/bin/env bash
-# WatchTell Worker Install — runs on Amazon Linux 2023 x86_64 via EC2 user data.
-# Installs: OpenALPR (from source), ALPR worker service, camera relay service.
-set -euo pipefail
+# WatchTell Worker Install
+# Designed for Amazon Linux 2023 x86_64.
+# Called from EC2 user data: AWS_DEFAULT_REGION=us-east-1 bash install.sh
+# Safe to re-run — all steps are idempotent.
+set -uo pipefail
 
 WORKER_DIR="/opt/watchtell"
+LOG="/var/log/watchtell-install.log"
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
-ACCOUNT="${AWS_ACCOUNT_ID:-}"
-DEPLOY_BUCKET="watchtell-deploy"
 
-log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
+log()  { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOG"; }
+fail() { log "ERROR: $*"; }
+
+exec >> "$LOG" 2>&1
 log "=== WatchTell Install START ==="
 
 # ---------------------------------------------------------------------------
-# 1. System packages
+# 1. Resolve AWS account ID from EC2 instance metadata (IMDSv2)
 # ---------------------------------------------------------------------------
-log "Installing system packages..."
-dnf update -y
-dnf install -y python3.12 python3.12-pip git cmake make gcc gcc-c++ \
-    openssl-devel blas-devel opencv opencv-devel \
-    libtesseract-devel leptonica-devel \
-    mesa-libGL libSM libXext libXrender
+TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
+  -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
+if [ -n "$TOKEN" ]; then
+  ACCOUNT=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" \
+    "http://169.254.169.254/latest/dynamic/instance-identity/document" \
+    | grep '"accountId"' | cut -d'"' -f4)
+fi
+ACCOUNT="${ACCOUNT:-${AWS_ACCOUNT_ID:-}}"
+[ -n "$ACCOUNT" ] || { log "FATAL: cannot determine account ID"; exit 1; }
+log "Account: $ACCOUNT  Region: $REGION"
+
+QUEUE_URL="https://sqs.${REGION}.amazonaws.com/${ACCOUNT}/watchtell-alpr-queue"
+MEDIA_BUCKET="watchtell-media-${ACCOUNT}"
+HLS_BUCKET="watchtell-hls-${ACCOUNT}"
+DEPLOY_BUCKET="watchtell-deploy"
 
 # ---------------------------------------------------------------------------
-# 2. OpenALPR from source (skip if already installed)
+# 2. System packages
 # ---------------------------------------------------------------------------
-if ! command -v alpr &>/dev/null; then
-    log "Building OpenALPR from source (this takes ~5 min)..."
-    cd /tmp
-    git clone --depth 1 https://github.com/openalpr/openalpr.git
-    mkdir -p /tmp/openalpr/src/build
-    cd /tmp/openalpr/src/build
-    cmake \
-        -DCMAKE_INSTALL_PREFIX=/usr \
-        -DCMAKE_INSTALL_SYSCONFDIR=/etc \
-        -DWITH_PYTHON3=ON \
-        ..
-    make -j"$(nproc)"
-    make install
-    ldconfig
-    log "OpenALPR installed: $(alpr --version 2>&1 | head -1)"
+log "Installing system packages..."
+dnf install -y \
+  cmake make gcc gcc-c++ git \
+  autoconf automake libtool pkg-config \
+  python3 \
+  mesa-libGL libSM libXext libXrender \
+  || fail "some system packages unavailable"
+
+# Tesseract + Leptonica (required by OpenALPR)
+log "Installing tesseract..."
+dnf install -y tesseract tesseract-devel leptonica leptonica-devel \
+  && log "tesseract installed via dnf" \
+  || log "WARN: tesseract not in dnf repos — OpenALPR build may fail"
+
+# ---------------------------------------------------------------------------
+# 3. Python pip + packages
+# ---------------------------------------------------------------------------
+log "Setting up pip..."
+python3 -m pip --version &>/dev/null || \
+  curl -sS https://bootstrap.pypa.io/get-pip.py | python3
+
+log "Installing Python packages..."
+python3 -m pip install --quiet \
+  boto3 \
+  opencv-python-headless \
+  numpy \
+  python-dotenv \
+  || fail "some Python packages failed"
+
+# ---------------------------------------------------------------------------
+# 4. FFmpeg static binary
+# ---------------------------------------------------------------------------
+if ! command -v ffmpeg &>/dev/null; then
+  log "Installing FFmpeg static binary..."
+  tmpdir=$(mktemp -d)
+  curl -sL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" \
+    | tar -xJ -C "$tmpdir"
+  find "$tmpdir" -name "ffmpeg" -type f | head -1 | xargs -I{} cp {} /usr/local/bin/ffmpeg
+  chmod +x /usr/local/bin/ffmpeg
+  rm -rf "$tmpdir"
+  log "FFmpeg: $(ffmpeg -version 2>&1 | head -1)"
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Worker code
+# 5. OpenALPR (build from source — skip if already installed)
+# ---------------------------------------------------------------------------
+if ! command -v alpr &>/dev/null; then
+  log "Building OpenALPR from source (10-15 min)..."
+  cd /tmp
+  rm -rf openalpr
+  git clone --depth 1 https://github.com/openalpr/openalpr.git
+  mkdir -p /tmp/openalpr/src/build
+  cd /tmp/openalpr/src/build
+  cmake \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_SYSCONFDIR=/etc \
+    -DWITH_PYTHON3=ON \
+    ..
+  make -j"$(nproc)"
+  make install
+  ldconfig
+  rm -rf /tmp/openalpr
+  command -v alpr \
+    && log "OpenALPR: $(alpr --version 2>&1 | head -1)" \
+    || fail "OpenALPR build finished but binary not found"
+else
+  log "OpenALPR already installed: $(alpr --version 2>&1 | head -1)"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Worker code (pull latest from S3)
 # ---------------------------------------------------------------------------
 log "Deploying worker from s3://$DEPLOY_BUCKET/worker/latest.tar.gz..."
 mkdir -p "$WORKER_DIR"
 aws s3 cp "s3://$DEPLOY_BUCKET/worker/latest.tar.gz" /tmp/watchtell-worker.tar.gz \
-    --region "$REGION"
+  --region "$REGION"
 tar -xzf /tmp/watchtell-worker.tar.gz -C "$WORKER_DIR" --strip-components=1
-rm /tmp/watchtell-worker.tar.gz
+rm -f /tmp/watchtell-worker.tar.gz
+log "Worker code deployed."
 
 # ---------------------------------------------------------------------------
-# 4. Python dependencies (openalpr is installed by cmake above, not pip)
-# ---------------------------------------------------------------------------
-log "Installing Python dependencies..."
-pip3.12 install -r "$WORKER_DIR/requirements.txt"
-
-# ---------------------------------------------------------------------------
-# 5. ALPR worker service
+# 7. ALPR worker service
 # ---------------------------------------------------------------------------
 log "Configuring ALPR worker service..."
-QUEUE_URL="https://sqs.${REGION}.amazonaws.com/${ACCOUNT}/watchtell-alpr-queue"
-MEDIA_BUCKET="watchtell-media-${ACCOUNT}"
-
 mkdir -p /etc/watchtell
 cat > /etc/watchtell/worker.env <<EOF
 AWS_DEFAULT_REGION=${REGION}
@@ -75,70 +132,59 @@ ALPR_TOP_N=5
 EOF
 chmod 600 /etc/watchtell/worker.env
 
-# Patch the service file to use the env file
-sed -i 's|^WorkingDirectory=.*|WorkingDirectory=/opt/watchtell\nEnvironmentFile=/etc/watchtell/worker.env|' \
-    "$WORKER_DIR/watchtell-alpr.service"
-
 cp "$WORKER_DIR/watchtell-alpr.service" /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable watchtell-alpr
-systemctl start watchtell-alpr
-log "ALPR worker started."
 
 # ---------------------------------------------------------------------------
-# 6. FFmpeg static binary (needed for HLS relay)
-# ---------------------------------------------------------------------------
-if ! command -v ffmpeg &>/dev/null; then
-    log "Installing FFmpeg static binary..."
-    tmpdir=$(mktemp -d)
-    curl -sL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" \
-        | tar -xJ -C "$tmpdir"
-    find "$tmpdir" -name "ffmpeg" -type f | head -1 | xargs -I{} mv {} /usr/local/bin/ffmpeg
-    chmod +x /usr/local/bin/ffmpeg
-    rm -rf "$tmpdir"
-    log "FFmpeg: $(ffmpeg -version 2>&1 | head -1)"
-fi
-
-# ---------------------------------------------------------------------------
-# 7. Camera relay + HLS services (only if /watchtell/relay/rtsp_url is set in SSM)
+# 8. Camera relay + HLS (configure from SSM if RTSP URL is present)
 # ---------------------------------------------------------------------------
 log "Checking SSM for relay config..."
 RTSP_URL=$(aws ssm get-parameter \
-    --name /watchtell/relay/rtsp_url \
-    --with-decryption \
-    --query Parameter.Value \
-    --output text \
-    --region "$REGION" 2>/dev/null || echo "")
+  --name /watchtell/relay/rtsp_url \
+  --with-decryption \
+  --query Parameter.Value \
+  --output text \
+  --region "$REGION" 2>/dev/null || echo "")
 
 CAMERA_ID=$(aws ssm get-parameter \
-    --name /watchtell/relay/camera_id \
-    --query Parameter.Value \
-    --output text \
-    --region "$REGION" 2>/dev/null || echo "cam-01")
+  --name /watchtell/relay/camera_id \
+  --query Parameter.Value \
+  --output text \
+  --region "$REGION" 2>/dev/null || echo "cam-01")
 
 if [ -n "$RTSP_URL" ] && [ "$RTSP_URL" != "rtsp://PLACEHOLDER" ]; then
-    log "Relay RTSP URL found — configuring relay for camera: $CAMERA_ID"
-    cat > "$WORKER_DIR/relay.env" <<EOF
+  log "Configuring relay: camera=$CAMERA_ID"
+  cat > "$WORKER_DIR/relay.env" <<EOF
 CAMERA_ID=${CAMERA_ID}
 RTSP_URL=${RTSP_URL}
 MEDIA_BUCKET=${MEDIA_BUCKET}
-HLS_BUCKET=watchtell-hls-${ACCOUNT}
+HLS_BUCKET=${HLS_BUCKET}
 QUEUE_URL=${QUEUE_URL}
 AWS_REGION=${REGION}
 MOTION_THRESHOLD=2000
 MIN_INTERVAL_SEC=3
 EOF
-    chmod 600 "$WORKER_DIR/relay.env"
-    cp "$WORKER_DIR/watchtell-relay.service" /etc/systemd/system/
-    cp "$WORKER_DIR/watchtell-hls.service"   /etc/systemd/system/
-    systemctl daemon-reload
-    systemctl enable watchtell-relay watchtell-hls
-    systemctl start watchtell-relay watchtell-hls
-    log "Camera relay started (camera=$CAMERA_ID)."
-    log "HLS relay started — segments uploading to s3://${MEDIA_BUCKET}/hls/${CAMERA_ID}/"
+  chmod 600 "$WORKER_DIR/relay.env"
+  cp "$WORKER_DIR/watchtell-relay.service" /etc/systemd/system/
+  cp "$WORKER_DIR/watchtell-hls.service"   /etc/systemd/system/
+  log "Relay configured."
 else
-    log "No RTSP URL configured — skipping relay and HLS setup."
+  log "No RTSP URL in SSM — skipping relay setup."
+fi
+
+# ---------------------------------------------------------------------------
+# 9. Enable and start services
+# ---------------------------------------------------------------------------
+log "Starting services..."
+systemctl daemon-reload
+
+systemctl enable --now watchtell-alpr \
+  && log "ALPR worker started." || fail "ALPR worker failed to start"
+
+if [ -f /etc/systemd/system/watchtell-relay.service ]; then
+  systemctl enable --now watchtell-relay \
+    && log "Camera relay started." || fail "Camera relay failed to start"
+  systemctl enable --now watchtell-hls \
+    && log "HLS relay started." || fail "HLS relay failed to start"
 fi
 
 log "=== WatchTell Install COMPLETE ==="
-systemctl status watchtell-alpr --no-pager || true
