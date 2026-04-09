@@ -114,21 +114,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3e. OpenCV 4.8.0 — minimal build (core, imgproc, imgcodecs, highgui,
-#     objdetect, features2d) — not in AL2023 repos
+# 3e. OpenCV 3.4.18 — compatible with OpenALPR (OpenCV 4.x breaks videobuffer)
+#     Builds: core, imgproc, imgcodecs, highgui, objdetect, features2d, video, videoio
 # ---------------------------------------------------------------------------
 if ! ldconfig -p | grep -q libopencv_core; then
-  log "Building OpenCV 4.8.0 from source (15-20 min)..."
+  log "Building OpenCV 3.4.18 from source (15-20 min)..."
   cd /tmp
-  rm -rf opencv-4.8.0
-  curl -sL "https://github.com/opencv/opencv/archive/refs/tags/4.8.0.tar.gz" \
+  rm -rf opencv-3.4.18
+  curl -sL "https://github.com/opencv/opencv/archive/refs/tags/3.4.18.tar.gz" \
     | tar -xz
-  mkdir -p opencv-4.8.0/build
-  cd opencv-4.8.0/build
+  mkdir -p opencv-3.4.18/build
+  cd opencv-3.4.18/build
   cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \
-    -DBUILD_LIST=core,imgproc,highgui,imgcodecs,objdetect,features2d \
+    -DBUILD_LIST=core,imgproc,highgui,imgcodecs,objdetect,features2d,video,videoio \
     -DBUILD_EXAMPLES=OFF \
     -DBUILD_TESTS=OFF \
     -DBUILD_PERF_TESTS=OFF \
@@ -144,7 +144,7 @@ if ! ldconfig -p | grep -q libopencv_core; then
   make -j"$(nproc)"
   make install
   ldconfig
-  rm -rf /tmp/opencv-4.8.0
+  rm -rf /tmp/opencv-3.4.18
   log "OpenCV: $(find /usr -name 'OpenCVConfig.cmake' 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo installed)"
 else
   log "OpenCV already installed."
@@ -154,8 +154,7 @@ fi
 # 4. Python pip + packages
 # ---------------------------------------------------------------------------
 log "Setting up pip..."
-python3 -m pip --version &>/dev/null || \
-  curl -sS https://bootstrap.pypa.io/get-pip.py | python3
+curl -sS https://bootstrap.pypa.io/get-pip.py | python3
 
 log "Installing Python packages..."
 python3 -m pip install --quiet \
