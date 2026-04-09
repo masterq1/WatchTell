@@ -200,7 +200,7 @@ if ! command -v alpr &>/dev/null; then
   make -j"$(nproc)"
   make install
   ldconfig
-  rm -rf /tmp/openalpr
+  rm -rf /tmp/openalpr /tmp/log4cplus-* /tmp/leptonica-* /tmp/tesseract-* /tmp/opencv-*
   command -v alpr \
     && log "OpenALPR: $(alpr --version 2>&1 | head -1)" \
     || fail "OpenALPR build finished but binary not found"
