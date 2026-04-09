@@ -2,6 +2,11 @@
 # WatchTell Worker Install
 # Designed for Amazon Linux 2023 x86_64.
 # Called from EC2 user data: AWS_DEFAULT_REGION=us-east-1 bash install.sh
+#
+# FAST PATH: if launched from an AMI built with build-ami.sh, all build
+# steps (3a-5) skip instantly — only steps 6-9 run (~30s total).
+# SLOW PATH: first run from stock AL2023 takes ~45 min to build all deps.
+#
 # Safe to re-run — all steps are idempotent.
 set -uo pipefail
 
@@ -43,14 +48,9 @@ dnf install -y \
   autoconf automake libtool pkg-config \
   python3 \
   mesa-libGL libSM libXext libXrender \
-  || fail "some system packages unavailable"
-
-# Tesseract + Leptonica image libraries (required by both)
-log "Installing image/build libraries..."
-dnf install -y \
   libjpeg-devel libpng-devel libtiff-devel zlib-devel \
   giflib-devel libwebp-devel \
-  || fail "some image libraries unavailable"
+  || fail "some system packages unavailable"
 
 # ---------------------------------------------------------------------------
 # 3a. Leptonica 1.82.0 (build from source — not in AL2023 repos)
@@ -95,6 +95,43 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 3c. OpenCV 4.8.0 — minimal build (core, imgproc, imgcodecs, highgui,
+#     objdetect, features2d) — not in AL2023 repos
+# ---------------------------------------------------------------------------
+if ! pkg-config --exists opencv4 2>/dev/null; then
+  log "Building OpenCV 4.8.0 from source (15-20 min)..."
+  cd /tmp
+  rm -rf opencv-4.8.0
+  curl -sL "https://github.com/opencv/opencv/archive/refs/tags/4.8.0.tar.gz" \
+    | tar -xz
+  mkdir -p opencv-4.8.0/build
+  cd opencv-4.8.0/build
+  cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DBUILD_LIST=core,imgproc,highgui,imgcodecs,objdetect,features2d \
+    -DBUILD_EXAMPLES=OFF \
+    -DBUILD_TESTS=OFF \
+    -DBUILD_PERF_TESTS=OFF \
+    -DBUILD_opencv_python3=OFF \
+    -DBUILD_opencv_python2=OFF \
+    -DWITH_FFMPEG=OFF \
+    -DWITH_GTK=OFF \
+    -DWITH_QT=OFF \
+    -DWITH_1394=OFF \
+    -DWITH_GSTREAMER=OFF \
+    -DWITH_IPP=OFF \
+    -DWITH_TBB=OFF
+  make -j"$(nproc)"
+  make install
+  ldconfig
+  rm -rf /tmp/opencv-4.8.0
+  log "OpenCV: $(pkg-config --modversion opencv4)"
+else
+  log "OpenCV already installed: $(pkg-config --modversion opencv4)"
+fi
+
+# ---------------------------------------------------------------------------
 # 4. Python pip + packages
 # ---------------------------------------------------------------------------
 log "Setting up pip..."
@@ -110,7 +147,7 @@ python3 -m pip install --quiet \
   || fail "some Python packages failed"
 
 # ---------------------------------------------------------------------------
-# 4. FFmpeg static binary
+# 5. FFmpeg static binary
 # ---------------------------------------------------------------------------
 if ! command -v ffmpeg &>/dev/null; then
   log "Installing FFmpeg static binary..."
@@ -121,10 +158,12 @@ if ! command -v ffmpeg &>/dev/null; then
   chmod +x /usr/local/bin/ffmpeg
   rm -rf "$tmpdir"
   log "FFmpeg: $(ffmpeg -version 2>&1 | head -1)"
+else
+  log "FFmpeg already installed."
 fi
 
 # ---------------------------------------------------------------------------
-# 5. OpenALPR (build from source — skip if already installed)
+# 6. OpenALPR (build from source — skip if already installed)
 # ---------------------------------------------------------------------------
 if ! command -v alpr &>/dev/null; then
   log "Building OpenALPR from source (10-15 min)..."
@@ -150,7 +189,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Worker code (pull latest from S3)
+# 7. Worker code (pull latest from S3)
 # ---------------------------------------------------------------------------
 log "Deploying worker from s3://$DEPLOY_BUCKET/worker/latest.tar.gz..."
 mkdir -p "$WORKER_DIR"
@@ -161,7 +200,7 @@ rm -f /tmp/watchtell-worker.tar.gz
 log "Worker code deployed."
 
 # ---------------------------------------------------------------------------
-# 7. ALPR worker service
+# 8. ALPR worker service
 # ---------------------------------------------------------------------------
 log "Configuring ALPR worker service..."
 mkdir -p /etc/watchtell
@@ -178,7 +217,7 @@ chmod 600 /etc/watchtell/worker.env
 cp "$WORKER_DIR/watchtell-alpr.service" /etc/systemd/system/
 
 # ---------------------------------------------------------------------------
-# 8. Camera relay + HLS (configure from SSM if RTSP URL is present)
+# 9. Camera relay + HLS (configure from SSM if RTSP URL is present)
 # ---------------------------------------------------------------------------
 log "Checking SSM for relay config..."
 RTSP_URL=$(aws ssm get-parameter \
@@ -215,7 +254,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 9. Enable and start services
+# 10. Enable and start services
 # ---------------------------------------------------------------------------
 log "Starting services..."
 systemctl daemon-reload
