@@ -44,6 +44,6 @@ exec ffmpeg \
     -f hls \
     -hls_time "${HLS_TIME}" \
     -hls_list_size "${HLS_LIST_SIZE}" \
-    -hls_flags delete_segments+append_list \
+    -hls_flags delete_segments \
     -hls_segment_filename "${HLS_DIR}/seg%05d.ts" \
     "${HLS_DIR}/index.m3u8"
