@@ -98,7 +98,7 @@ fi
 # 3c. OpenCV 4.8.0 — minimal build (core, imgproc, imgcodecs, highgui,
 #     objdetect, features2d) — not in AL2023 repos
 # ---------------------------------------------------------------------------
-if ! pkg-config --exists opencv4 2>/dev/null; then
+if ! ldconfig -p | grep -q libopencv_core; then
   log "Building OpenCV 4.8.0 from source (15-20 min)..."
   cd /tmp
   rm -rf opencv-4.8.0
@@ -126,9 +126,9 @@ if ! pkg-config --exists opencv4 2>/dev/null; then
   make install
   ldconfig
   rm -rf /tmp/opencv-4.8.0
-  log "OpenCV: $(pkg-config --modversion opencv4)"
+  log "OpenCV: $(find /usr -name 'OpenCVConfig.cmake' 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo installed)"
 else
-  log "OpenCV already installed: $(pkg-config --modversion opencv4)"
+  log "OpenCV already installed."
 fi
 
 # ---------------------------------------------------------------------------
@@ -172,10 +172,12 @@ if ! command -v alpr &>/dev/null; then
   git clone --depth 1 https://github.com/openalpr/openalpr.git
   mkdir -p /tmp/openalpr/src/build
   cd /tmp/openalpr/src/build
+  OPENCV_CMAKE_DIR=$(find /usr -name "OpenCVConfig.cmake" 2>/dev/null | head -1 | xargs dirname)
   cmake \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DCMAKE_INSTALL_SYSCONFDIR=/etc \
     -DWITH_PYTHON3=ON \
+    -DOpenCV_DIR="$OPENCV_CMAKE_DIR" \
     ..
   make -j"$(nproc)"
   make install
