@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+*.egg
+.pytest_cache/
+
+# CDK
+infrastructure/cdk.out/
+infrastructure/.cdk.staging/
+
+# Node
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+frontend/dist/
+mobile/dist/
+
+# Expo / React Native
+mobile/.expo/
+mobile/android/
+mobile/ios/
+*.jks
+*.p8
+*.p12
+*.mobileprovision
+*.orig.*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Secrets
+*.pem
+*.key

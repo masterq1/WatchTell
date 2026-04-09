@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* IBM Plex Mono and Inter loaded via Google Fonts in index.html */
+
+:root {
+  color-scheme: dark;
+}
+
+/* Scrollbar styling */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2c3140 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #2c3140;
+  border-radius: 3px;
+}
+
+/* AWS Amplify Authenticator dark theme overrides */
+[data-amplify-authenticator] {
+  --amplify-colors-background-primary: theme('colors.charcoal.900');
+  --amplify-colors-background-secondary: theme('colors.charcoal.800');
+  --amplify-colors-border-primary: theme('colors.charcoal.600');
+  --amplify-colors-font-primary: theme('colors.slate.100');
+  --amplify-colors-brand-primary-60: theme('colors.amber.500');
+  --amplify-colors-brand-primary-80: theme('colors.amber.400');
+  --amplify-colors-brand-primary-100: theme('colors.amber.400');
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

@@ -1,0 +1,19 @@
+[Unit]
+Description=WatchTell HLS Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/watchtell
+EnvironmentFile=/opt/watchtell/relay.env
+ExecStart=/bin/bash /opt/watchtell/hls_relay.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=watchtell-hls
+
+[Install]
+WantedBy=multi-user.target

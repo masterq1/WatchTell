@@ -1,0 +1,23 @@
+[Unit]
+Description=WatchTell ALPR Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/watchtell
+ExecStart=/usr/bin/python3.12 /opt/watchtell/alpr_worker.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=watchtell-alpr
+
+# Give the process up to 120s to finish current job on termination
+TimeoutStopSec=120
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

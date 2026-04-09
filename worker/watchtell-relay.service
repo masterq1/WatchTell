@@ -1,0 +1,19 @@
+[Unit]
+Description=WatchTell Camera Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/watchtell
+EnvironmentFile=/opt/watchtell/relay.env
+ExecStart=/usr/bin/python3.12 /opt/watchtell/camera_relay.py
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=watchtell-relay
+
+[Install]
+WantedBy=multi-user.target
