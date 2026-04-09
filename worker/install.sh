@@ -196,6 +196,8 @@ if ! command -v alpr &>/dev/null; then
     -DCMAKE_INSTALL_SYSCONFDIR=/etc \
     -DWITH_PYTHON3=ON \
     -DOpenCV_DIR="$OPENCV_CMAKE_DIR" \
+    -DWITH_GPU_DETECTOR=OFF \
+    -DBUILD_VIDEO_DETECTOR=OFF \
     ..
   make -j"$(nproc)"
   make install
