@@ -53,7 +53,26 @@ dnf install -y \
   || fail "some system packages unavailable"
 
 # ---------------------------------------------------------------------------
-# 3a. Leptonica 1.82.0 (build from source — not in AL2023 repos)
+# 3a. log4cplus 2.0.7 (build from source — not in AL2023 repos, required by OpenALPR)
+# ---------------------------------------------------------------------------
+if ! ldconfig -p | grep -q liblog4cplus; then
+  log "Building log4cplus 2.0.7 from source..."
+  cd /tmp
+  rm -rf log4cplus-2.0.7
+  curl -sL "https://github.com/log4cplus/log4cplus/releases/download/REL_2_0_7/log4cplus-2.0.7.tar.xz" \
+    | tar -xJ
+  cd log4cplus-2.0.7
+  ./configure --prefix=/usr --disable-tests
+  make -j"$(nproc)"
+  make install
+  ldconfig
+  log "log4cplus installed."
+else
+  log "log4cplus already installed."
+fi
+
+# ---------------------------------------------------------------------------
+# 3c. Leptonica 1.82.0 (build from source — not in AL2023 repos)
 # ---------------------------------------------------------------------------
 if ! ldconfig -p | grep -q liblept; then
   log "Building Leptonica 1.82.0 from source..."
@@ -72,7 +91,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3b. Tesseract 4.1.3 (build from source — not in AL2023 repos)
+# 3d. Tesseract 4.1.3 (build from source — not in AL2023 repos)
 # ---------------------------------------------------------------------------
 if ! command -v tesseract &>/dev/null; then
   log "Building Tesseract 4.1.3 from source (5-10 min)..."
@@ -95,7 +114,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3c. OpenCV 4.8.0 — minimal build (core, imgproc, imgcodecs, highgui,
+# 3e. OpenCV 4.8.0 — minimal build (core, imgproc, imgcodecs, highgui,
 #     objdetect, features2d) — not in AL2023 repos
 # ---------------------------------------------------------------------------
 if ! ldconfig -p | grep -q libopencv_core; then
