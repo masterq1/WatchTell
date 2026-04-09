@@ -45,14 +45,57 @@ dnf install -y \
   mesa-libGL libSM libXext libXrender \
   || fail "some system packages unavailable"
 
-# Tesseract + Leptonica (required by OpenALPR)
-log "Installing tesseract..."
-dnf install -y tesseract tesseract-devel leptonica leptonica-devel \
-  && log "tesseract installed via dnf" \
-  || log "WARN: tesseract not in dnf repos — OpenALPR build may fail"
+# Tesseract + Leptonica image libraries (required by both)
+log "Installing image/build libraries..."
+dnf install -y \
+  libjpeg-devel libpng-devel libtiff-devel zlib-devel \
+  giflib-devel libwebp-devel \
+  || fail "some image libraries unavailable"
 
 # ---------------------------------------------------------------------------
-# 3. Python pip + packages
+# 3a. Leptonica 1.82.0 (build from source — not in AL2023 repos)
+# ---------------------------------------------------------------------------
+if ! ldconfig -p | grep -q liblept; then
+  log "Building Leptonica 1.82.0 from source..."
+  cd /tmp
+  rm -rf leptonica-1.82.0
+  curl -sL "https://github.com/DanBloomberg/leptonica/releases/download/1.82.0/leptonica-1.82.0.tar.gz" \
+    | tar -xz
+  cd leptonica-1.82.0
+  ./configure --prefix=/usr
+  make -j"$(nproc)"
+  make install
+  ldconfig
+  log "Leptonica: $(pkg-config --modversion lept 2>/dev/null || echo installed)"
+else
+  log "Leptonica already installed."
+fi
+
+# ---------------------------------------------------------------------------
+# 3b. Tesseract 4.1.3 (build from source — not in AL2023 repos)
+# ---------------------------------------------------------------------------
+if ! command -v tesseract &>/dev/null; then
+  log "Building Tesseract 4.1.3 from source (5-10 min)..."
+  cd /tmp
+  rm -rf tesseract-4.1.3
+  curl -sL "https://github.com/tesseract-ocr/tesseract/archive/refs/tags/4.1.3.tar.gz" \
+    | tar -xz
+  cd tesseract-4.1.3
+  ./autogen.sh
+  ./configure --prefix=/usr
+  make -j"$(nproc)"
+  make install
+  ldconfig
+  mkdir -p /usr/share/tessdata
+  curl -sL "https://github.com/tesseract-ocr/tessdata/raw/main/eng.traineddata" \
+    -o /usr/share/tessdata/eng.traineddata
+  log "Tesseract: $(tesseract --version 2>&1 | head -1)"
+else
+  log "Tesseract already installed: $(tesseract --version 2>&1 | head -1)"
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Python pip + packages
 # ---------------------------------------------------------------------------
 log "Setting up pip..."
 python3 -m pip --version &>/dev/null || \
