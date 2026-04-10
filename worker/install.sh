@@ -190,14 +190,15 @@ if ! command -v alpr &>/dev/null; then
   git clone --depth 1 https://github.com/openalpr/openalpr.git
   mkdir -p /tmp/openalpr/src/build
   cd /tmp/openalpr/src/build
+  # Stub out videobuffer.cpp — incompatible with gcc 11 (cv::VideoCapture API change)
+  # The worker processes static JPEG frames; live video capture is not needed.
+  python3 -c "open('/tmp/openalpr/src/video/videobuffer.cpp','w').write('// stub\n')"
   OPENCV_CMAKE_DIR=$(find /usr -name "OpenCVConfig.cmake" 2>/dev/null | head -1 | xargs dirname)
   cmake \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DCMAKE_INSTALL_SYSCONFDIR=/etc \
     -DWITH_PYTHON3=ON \
     -DOpenCV_DIR="$OPENCV_CMAKE_DIR" \
-    -DWITH_GPU_DETECTOR=OFF \
-    -DBUILD_VIDEO_DETECTOR=OFF \
     ..
   make -j"$(nproc)"
   make install
