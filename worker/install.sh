@@ -192,7 +192,7 @@ if ! command -v alpr &>/dev/null; then
   cd /tmp/openalpr/src/build
   # Stub out videobuffer.cpp — incompatible with gcc 11 (cv::VideoCapture API change)
   # The worker processes static JPEG frames; live video capture is not needed.
-  python3 -c "open('/tmp/openalpr/src/video/videobuffer.cpp','w').write('// stub\n')"
+  echo "// stub" > /tmp/openalpr/src/video/videobuffer.cpp
   OPENCV_CMAKE_DIR=$(find /usr -name "OpenCVConfig.cmake" 2>/dev/null | head -1 | xargs dirname)
   cmake \
     -DCMAKE_INSTALL_PREFIX=/usr \
