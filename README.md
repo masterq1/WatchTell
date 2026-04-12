@@ -337,7 +337,6 @@ Some product areas are still incomplete or partially wired:
 
 ## Key Files To Start With
 
-- [CLAUDE.md](./CLAUDE.md)
 - [infrastructure/app.py](./infrastructure/app.py)
 - [relay/camera_relay.py](./relay/camera_relay.py)
 - [worker/alpr_worker.py](./worker/alpr_worker.py)
