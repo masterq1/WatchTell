@@ -20,7 +20,7 @@ export function Layout() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-charcoal-900 text-slate-100">
+    <div className="h-screen w-full flex flex-col bg-charcoal-900 text-slate-100 overflow-hidden">
       {/* Top navigation */}
       <header className="flex items-center gap-6 px-4 py-2.5 border-b border-charcoal-700 shrink-0">
         <span className="text-amber-400 font-semibold tracking-wide text-sm font-mono select-none">

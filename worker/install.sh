@@ -13,6 +13,9 @@ set -uo pipefail
 WORKER_DIR="/opt/watchtell"
 LOG="/var/log/watchtell-install.log"
 REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+ENABLE_LOCAL_HLS="${ENABLE_LOCAL_HLS:-1}"
+WATCHTELL_SKIP_S3_REFRESH="${WATCHTELL_SKIP_S3_REFRESH:-0}"
+WATCHTELL_CREATE_AMI_IF_MISSING="${WATCHTELL_CREATE_AMI_IF_MISSING:-0}"
 
 log()  { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" | tee -a "$LOG"; }
 fail() { log "ERROR: $*"; }
@@ -34,8 +37,26 @@ ACCOUNT="${ACCOUNT:-${AWS_ACCOUNT_ID:-}}"
 [ -n "$ACCOUNT" ] || { log "FATAL: cannot determine account ID"; exit 1; }
 log "Account: $ACCOUNT  Region: $REGION"
 
-QUEUE_URL="https://sqs.${REGION}.amazonaws.com/${ACCOUNT}/watchtell-alpr-queue"
-MEDIA_BUCKET="watchtell-media-${ACCOUNT}"
+get_ssm_or_default() {
+  local name="$1"
+  local fallback="$2"
+  aws ssm get-parameter \
+    --name "$name" \
+    --with-decryption \
+    --query Parameter.Value \
+    --output text \
+    --region "$REGION" 2>/dev/null || echo "$fallback"
+}
+
+QUEUE_URL=$(get_ssm_or_default \
+  /watchtell/runtime/alpr_queue_url \
+  "https://sqs.${REGION}.amazonaws.com/${ACCOUNT}/watchtell-alpr-queue")
+RESULT_QUEUE_URL=$(get_ssm_or_default \
+  /watchtell/runtime/results_queue_url \
+  "https://sqs.${REGION}.amazonaws.com/${ACCOUNT}/watchtell-alpr-results")
+MEDIA_BUCKET=$(get_ssm_or_default \
+  /watchtell/runtime/media_bucket \
+  "watchtell-media-${ACCOUNT}")
 HLS_BUCKET="watchtell-hls-${ACCOUNT}"
 DEPLOY_BUCKET="watchtell-deploy"
 
@@ -114,21 +135,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3e. OpenCV 3.4.18 — compatible with OpenALPR (OpenCV 4.x breaks videobuffer)
-#     Builds: core, imgproc, imgcodecs, highgui, objdetect, features2d, video, videoio
+# 3e. OpenCV 4.8.0 — includes ml module required by OpenALPR
+#     videobuffer.cpp is stubbed in step 6 (worker doesn't use live capture)
 # ---------------------------------------------------------------------------
 if ! ldconfig -p | grep -q libopencv_core; then
-  log "Building OpenCV 3.4.18 from source (15-20 min)..."
+  log "Building OpenCV 4.8.0 from source (15-20 min)..."
   cd /tmp
-  rm -rf opencv-3.4.18
-  curl -sL "https://github.com/opencv/opencv/archive/refs/tags/3.4.18.tar.gz" \
+  rm -rf opencv-4.8.0
+  curl -sL "https://github.com/opencv/opencv/archive/refs/tags/4.8.0.tar.gz" \
     | tar -xz
-  mkdir -p opencv-3.4.18/build
-  cd opencv-3.4.18/build
+  mkdir -p opencv-4.8.0/build
+  cd opencv-4.8.0/build
   cmake .. \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX=/usr \
-    -DBUILD_LIST=core,imgproc,highgui,imgcodecs,objdetect,features2d,video,videoio \
+    -DBUILD_LIST=core,imgproc,highgui,imgcodecs,objdetect,features2d,ml \
     -DBUILD_EXAMPLES=OFF \
     -DBUILD_TESTS=OFF \
     -DBUILD_PERF_TESTS=OFF \
@@ -144,21 +165,29 @@ if ! ldconfig -p | grep -q libopencv_core; then
   make -j"$(nproc)"
   make install
   ldconfig
-  rm -rf /tmp/opencv-3.4.18
+  rm -rf /tmp/opencv-4.8.0
+  # OpenCV 4.x installs headers to /usr/include/opencv4/opencv2/ — symlink the
+  # legacy path so OpenALPR (which includes "opencv2/...") finds them.
+  ln -sfn /usr/include/opencv4/opencv2 /usr/include/opencv2
   log "OpenCV: $(find /usr -name 'OpenCVConfig.cmake' 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo installed)"
 else
   log "OpenCV already installed."
+  # Ensure symlink exists on pre-built AMI fast path too
+  ln -sfn /usr/include/opencv4/opencv2 /usr/include/opencv2 2>/dev/null || true
 fi
 
 # ---------------------------------------------------------------------------
 # 4. Python pip + packages
 # ---------------------------------------------------------------------------
 log "Setting up pip..."
-curl -sS https://bootstrap.pypa.io/get-pip.py | python3
+# dnf is more reliable than bootstrap.pypa.io on AL2023
+dnf install -y python3-pip -q || curl -sS https://bootstrap.pypa.io/get-pip.py | python3
 
 log "Installing Python packages..."
 python3 -m pip install --quiet \
   boto3 \
+  Pillow \
+  requests \
   opencv-python-headless \
   numpy \
   python-dotenv \
@@ -188,11 +217,91 @@ if ! command -v alpr &>/dev/null; then
   cd /tmp
   rm -rf openalpr
   git clone --depth 1 https://github.com/openalpr/openalpr.git
+  # Stub out videobuffer.cpp and videoio — OpenCV 4.x split videoio from highgui;
+  # worker processes static JPEG frames so video capture is never needed.
+  cat > /tmp/openalpr/src/video/videobuffer.cpp << 'VBEOF'
+#include "videobuffer.h"
+VideoBuffer::VideoBuffer() : dispatcher(nullptr) {}
+VideoBuffer::~VideoBuffer() {}
+void VideoBuffer::connect(std::string u, int f) { (void)u; (void)f; }
+int VideoBuffer::getLatestFrame(cv::Mat* f, std::vector<cv::Rect>& r) { (void)f; (void)r; return -1; }
+void VideoBuffer::disconnect() {}
+VideoDispatcher* VideoBuffer::createDispatcher(std::string u, int f) { (void)u; (void)f; return nullptr; }
+VBEOF
+  # Stub videoio.hpp — OpenCV 4.x no longer includes VideoCapture via highgui.hpp
+  cat > /usr/include/opencv4/opencv2/videoio.hpp << 'VIEOF'
+#pragma once
+#include "opencv2/core/core.hpp"
+namespace cv {
+  enum { CAP_PROP_POS_MSEC = 0 };
+  class VideoCapture {
+  public:
+    VideoCapture(int n = 0) { (void)n; }
+    VideoCapture(const std::string& s) { (void)s; }
+    bool isOpened() const { return false; }
+    bool read(cv::Mat& f) { (void)f; return false; }
+    bool open(const std::string& s) { (void)s; return false; }
+    bool set(int p, double v) { (void)p; (void)v; return false; }
+  };
+}
+VIEOF
+  # main.cpp needs explicit videoio include (OpenCV 4.x split from highgui)
+  sed -i 's|#include "opencv2/imgproc/imgproc.hpp"|#include "opencv2/imgproc/imgproc.hpp"\n#include "opencv2/videoio.hpp"|' \
+    /tmp/openalpr/src/main.cpp
+  # Patch OpenCV 4.x compatibility: ml.hpp moved, CV_HAAR_DO_CANNY_PRUNING removed
+  sed -i 's|opencv2/ml/ml.hpp|opencv2/ml.hpp|g' \
+    /tmp/openalpr/src/openalpr/detection/detectorcpu.h \
+    /tmp/openalpr/src/openalpr/detection/detectormorph.h \
+    /tmp/openalpr/src/openalpr/detection/detectorocl.h \
+    /tmp/openalpr/src/openalpr/detection/detectorcuda.h
+  sed -i 's|CV_HAAR_DO_CANNY_PRUNING|2|g' \
+    /tmp/openalpr/src/openalpr/detection/detectorocl.cpp
+  # Stub motiondetector — uses cv::BackgroundSubtractor from video module (not built)
+  cat > /tmp/openalpr/src/openalpr/motiondetector.h << 'HEOF'
+#ifndef OPENALPR_MOTIONDETECTOR_H
+#define OPENALPR_MOTIONDETECTOR_H
+
+#include "opencv2/core/core.hpp"
+#include "utility.h"
+
+namespace alpr
+{
+  class MotionDetector
+  {
+    public:
+      MotionDetector();
+      virtual ~MotionDetector();
+      void ResetMotionDetection(cv::Mat* frame);
+      cv::Rect MotionDetect(cv::Mat* frame);
+  };
+}
+
+#endif // OPENALPR_MOTIONDETECTOR_H
+HEOF
+  cat > /tmp/openalpr/src/openalpr/motiondetector.cpp << 'CEOF'
+#include "motiondetector.h"
+
+namespace alpr
+{
+
+MotionDetector::MotionDetector() {}
+MotionDetector::~MotionDetector() {}
+
+void MotionDetector::ResetMotionDetection(cv::Mat* frame)
+{
+  (void)frame;
+}
+
+cv::Rect MotionDetector::MotionDetect(cv::Mat* frame)
+{
+  (void)frame;
+  return cv::Rect(0, 0, 0, 0);
+}
+
+}
+CEOF
   mkdir -p /tmp/openalpr/src/build
   cd /tmp/openalpr/src/build
-  # Stub out videobuffer.cpp — incompatible with gcc 11 (cv::VideoCapture API change)
-  # The worker processes static JPEG frames; live video capture is not needed.
-  echo "// stub" > /tmp/openalpr/src/video/videobuffer.cpp
   OPENCV_CMAKE_DIR=$(find /usr -name "OpenCVConfig.cmake" 2>/dev/null | head -1 | xargs dirname)
   cmake \
     -DCMAKE_INSTALL_PREFIX=/usr \
@@ -211,16 +320,82 @@ else
   log "OpenALPR already installed: $(alpr --version 2>&1 | head -1)"
 fi
 
+# Ensure openalpr Python binding is visible to Python 3
+# CMake may install it under python2.7/dist-packages when Python 2 headers are found first
+OPENALPR_PY=$(find /usr/lib/python2.7 /usr/local/lib -maxdepth 5 -name "openalpr" -type d 2>/dev/null | head -1)
+if [ -n "$OPENALPR_PY" ]; then
+  PY3_SITE=$(python3 -c "import site; print(site.getsitepackages()[0])")
+  ln -sfn "$OPENALPR_PY" "$PY3_SITE/openalpr"
+  log "Linked openalpr Python binding: $OPENALPR_PY -> $PY3_SITE/openalpr"
+else
+  log "openalpr Python binding already on Python 3 path or not found under python2.7."
+fi
+
+# ---------------------------------------------------------------------------
+# 6b. Optional reusable AMI creation
+# ---------------------------------------------------------------------------
+# Single-stack deployments can boot from stock AL2023 the first time, build all
+# heavy dependencies, then create a clean reusable AMI before runtime env files
+# and camera secrets are written. Future CDK synths prefer the newest AMI tagged
+# WatchTellWorker=true.
+if [ "$WATCHTELL_CREATE_AMI_IF_MISSING" = "1" ]; then
+  EXISTING_AMI=$(aws ec2 describe-images \
+    --owners self \
+    --filters "Name=tag:WatchTellWorker,Values=true" "Name=state,Values=available" \
+    --query 'sort_by(Images,&CreationDate)[-1].ImageId' \
+    --output text \
+    --region "$REGION" 2>/dev/null || echo "")
+
+  if [ -z "$EXISTING_AMI" ] || [ "$EXISTING_AMI" = "None" ]; then
+    TOKEN=$(curl -sf -X PUT "http://169.254.169.254/latest/api/token" \
+      -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null || true)
+    INSTANCE_ID=$(curl -sf -H "X-aws-ec2-metadata-token: $TOKEN" \
+      "http://169.254.169.254/latest/meta-data/instance-id" 2>/dev/null || true)
+
+    if [ -n "$INSTANCE_ID" ]; then
+      AMI_NAME="watchtell-worker-$(date -u +%Y%m%d-%H%M%S)"
+      log "Creating reusable worker AMI: $AMI_NAME"
+      AMI_ID=$(aws ec2 create-image \
+        --instance-id "$INSTANCE_ID" \
+        --name "$AMI_NAME" \
+        --description "WatchTell worker dependencies prebuilt on AL2023" \
+        --no-reboot \
+        --region "$REGION" \
+        --query 'ImageId' \
+        --output text)
+      aws ec2 create-tags \
+        --resources "$AMI_ID" \
+        --tags Key=WatchTellWorker,Value=true Key=Name,Value="$AMI_NAME" \
+        --region "$REGION"
+      aws ssm put-parameter \
+        --name /watchtell/ami/latest \
+        --value "$AMI_ID" \
+        --type String \
+        --overwrite \
+        --region "$REGION"
+      log "AMI creation started: $AMI_ID"
+    else
+      log "Could not determine instance ID; skipping AMI creation."
+    fi
+  else
+    log "Reusable worker AMI already exists: $EXISTING_AMI"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # 7. Worker code (pull latest from S3)
 # ---------------------------------------------------------------------------
-log "Deploying worker from s3://$DEPLOY_BUCKET/worker/latest.tar.gz..."
-mkdir -p "$WORKER_DIR"
-aws s3 cp "s3://$DEPLOY_BUCKET/worker/latest.tar.gz" /tmp/watchtell-worker.tar.gz \
-  --region "$REGION"
-tar -xzf /tmp/watchtell-worker.tar.gz -C "$WORKER_DIR" --strip-components=1
-rm -f /tmp/watchtell-worker.tar.gz
-log "Worker code deployed."
+if [ "$WATCHTELL_SKIP_S3_REFRESH" = "1" ]; then
+  log "Using worker code already present in $WORKER_DIR."
+else
+  log "Deploying worker from s3://$DEPLOY_BUCKET/worker/latest.tar.gz..."
+  mkdir -p "$WORKER_DIR"
+  aws s3 cp "s3://$DEPLOY_BUCKET/worker/latest.tar.gz" /tmp/watchtell-worker.tar.gz \
+    --region "$REGION"
+  tar -xzf /tmp/watchtell-worker.tar.gz -C "$WORKER_DIR" --strip-components=1
+  rm -f /tmp/watchtell-worker.tar.gz
+  log "Worker code deployed."
+fi
 
 # ---------------------------------------------------------------------------
 # 8. ALPR worker service
@@ -230,7 +405,7 @@ mkdir -p /etc/watchtell
 cat > /etc/watchtell/worker.env <<EOF
 AWS_DEFAULT_REGION=${REGION}
 ALPR_QUEUE_URL=${QUEUE_URL}
-RESULT_QUEUE_URL=${QUEUE_URL}
+RESULT_QUEUE_URL=${RESULT_QUEUE_URL}
 MEDIA_BUCKET=${MEDIA_BUCKET}
 ALPR_COUNTRY=us
 ALPR_TOP_N=5
@@ -258,11 +433,17 @@ CAMERA_ID=$(aws ssm get-parameter \
 
 if [ -n "$RTSP_URL" ] && [ "$RTSP_URL" != "rtsp://PLACEHOLDER" ]; then
   log "Configuring relay: camera=$CAMERA_ID"
+  HLS_URL=$(aws ssm get-parameter \
+    --name /watchtell/camera/hls \
+    --query Parameter.Value \
+    --output text \
+    --region "$REGION" 2>/dev/null || echo "")
   cat > "$WORKER_DIR/relay.env" <<EOF
 CAMERA_ID=${CAMERA_ID}
 RTSP_URL=${RTSP_URL}
 MEDIA_BUCKET=${MEDIA_BUCKET}
 HLS_BUCKET=${HLS_BUCKET}
+HLS_URL=${HLS_URL}
 QUEUE_URL=${QUEUE_URL}
 AWS_REGION=${REGION}
 MOTION_THRESHOLD=2000
@@ -270,7 +451,9 @@ MIN_INTERVAL_SEC=3
 EOF
   chmod 600 "$WORKER_DIR/relay.env"
   cp "$WORKER_DIR/watchtell-relay.service" /etc/systemd/system/
-  cp "$WORKER_DIR/watchtell-hls.service"   /etc/systemd/system/
+  if [ "$ENABLE_LOCAL_HLS" = "1" ]; then
+    cp "$WORKER_DIR/watchtell-hls.service" /etc/systemd/system/
+  fi
   log "Relay configured."
 else
   log "No RTSP URL in SSM — skipping relay setup."
@@ -288,8 +471,12 @@ systemctl enable --now watchtell-alpr \
 if [ -f /etc/systemd/system/watchtell-relay.service ]; then
   systemctl enable --now watchtell-relay \
     && log "Camera relay started." || fail "Camera relay failed to start"
-  systemctl enable --now watchtell-hls \
-    && log "HLS relay started." || fail "HLS relay failed to start"
+  if [ -f /etc/systemd/system/watchtell-hls.service ]; then
+    systemctl enable --now watchtell-hls \
+      && log "HLS relay started." || fail "HLS relay failed to start"
+  else
+    log "Local HLS relay disabled; use /watchtell/camera/hls for browser playback."
+  fi
 fi
 
 log "=== WatchTell Install COMPLETE ==="

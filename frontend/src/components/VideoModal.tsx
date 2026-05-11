@@ -48,14 +48,20 @@ export function VideoModal({ s3Key, onClose }: Props) {
         {!error && !url && (
           <div className="p-8 text-center text-slate-400 animate-pulse">Loading clip…</div>
         )}
-        {url && (
+        {url && (/\.(jpg|jpeg|png|webp)$/i.test(s3Key) ? (
+          <img
+            src={url}
+            alt="Captured keyframe"
+            className="w-full max-h-[80vh] object-contain bg-black"
+          />
+        ) : (
           <video
             src={url}
             controls
             autoPlay
             className="w-full max-h-[80vh] bg-black"
           />
-        )}
+        ))}
       </div>
     </div>
   )

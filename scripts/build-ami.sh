@@ -35,7 +35,7 @@ log "Verifying dependencies on instance..."
 CMD_ID=$(aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
-  --parameters 'commands=["command -v alpr && alpr --version || { echo ALPR-MISSING; exit 1; }; command -v tesseract && tesseract --version 2>&1 | head -1; pkg-config --modversion opencv4; echo ALL-OK"]' \
+  --parameters 'commands=["command -v alpr || { echo ALPR-MISSING; exit 1; }; alpr --version 2>&1 || true; command -v tesseract && tesseract --version 2>&1 | head -1; pkg-config --modversion opencv4 2>/dev/null || true; echo ALL-OK"]' \
   --region "$REGION" \
   --query 'Command.CommandId' \
   --output text)
@@ -68,7 +68,7 @@ log "Creating AMI: $AMI_NAME..."
 AMI_ID=$(aws ec2 create-image \
   --instance-id "$INSTANCE_ID" \
   --name "$AMI_NAME" \
-  --description "WatchTell worker — Leptonica/Tesseract/OpenCV/OpenALPR pre-built on AL2023" \
+  --description "WatchTell worker - Leptonica/Tesseract/OpenCV/OpenALPR pre-built on AL2023" \
   --no-reboot \
   --region "$REGION" \
   --query 'ImageId' \

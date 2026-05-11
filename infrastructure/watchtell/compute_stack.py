@@ -1,3 +1,4 @@
+import os
 import aws_cdk as cdk
 from aws_cdk import (
     Stack,
@@ -22,6 +23,7 @@ class ComputeStack(Stack):
         watchlist_table: dynamodb.Table,
         media_bucket: s3.Bucket,
         alpr_queue: sqs.Queue,
+        results_queue: sqs.Queue,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -39,7 +41,7 @@ class ComputeStack(Stack):
         )
 
         alpr_queue.grant_consume_messages(role)
-        alpr_queue.grant_send_messages(role)
+        results_queue.grant_send_messages(role)
         media_bucket.grant_read_write(role)
         events_table.grant_read_write_data(role)
         watchlist_table.grant_read_data(role)
@@ -81,8 +83,12 @@ class ComputeStack(Stack):
         )
 
         # L1 CfnLaunchTemplate — gives full control over mixed instances Spot config
-        # Use Amazon Linux 2023 x86_64 AMI (resolved via SSM parameter)
-        ami = ec2.MachineImage.latest_amazon_linux2023().get_image(self).image_id
+        # Use custom AMI if AMI_ID env var is set (built by build-ami.sh), else latest AL2023
+        custom_ami = os.environ.get("AMI_ID", "")
+        if custom_ami:
+            ami = custom_ami
+        else:
+            ami = ec2.MachineImage.latest_amazon_linux2023().get_image(self).image_id
 
         cfn_lt = ec2.CfnLaunchTemplate(
             self, "LaunchTemplate",

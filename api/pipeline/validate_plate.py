@@ -39,7 +39,7 @@ _STATUS_MAP = {
 
 
 def _redis_client():
-    if not UPSTASH_URL:
+    if not UPSTASH_URL or UPSTASH_URL.lower() == "disabled":
         return None
     return redis.Redis.from_url(UPSTASH_URL, password=UPSTASH_TOKEN, decode_responses=True)
 
@@ -69,7 +69,7 @@ def _check_searchquarry(plate: str) -> str | None:
     Docs: https://www.searchquarry.com/api-documentation/
     GET https://api.searchquarry.com/license_plate/?term=<PLATE>&api_key=<KEY>
     """
-    if not SEARCHQUARRY_API_KEY:
+    if not SEARCHQUARRY_API_KEY or SEARCHQUARRY_API_KEY.lower() == "disabled":
         logger.warning("SEARCHQUARRY_API_KEY not set")
         return None
     try:

@@ -17,7 +17,7 @@ class QueueStack(Stack):
             retention_period=Duration.days(14),
         )
 
-        # Main ALPR processing queue
+        # Main ALPR processing queue (inbound jobs from camera relay)
         # visibility_timeout matches worker processing budget (90s)
         self.alpr_queue = sqs.Queue(
             self, "AlprQueue",
@@ -28,4 +28,13 @@ class QueueStack(Stack):
                 max_receive_count=3,
                 queue=dlq,
             ),
+        )
+
+        # Results queue — worker publishes ALPR results here; SqsTrigger Lambda reads from here
+        # Kept separate from the job queue to prevent the worker from re-consuming its own output
+        self.results_queue = sqs.Queue(
+            self, "AlprResultsQueue",
+            queue_name="watchtell-alpr-results",
+            visibility_timeout=Duration.seconds(30),
+            retention_period=Duration.days(1),
         )

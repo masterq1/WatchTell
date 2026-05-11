@@ -36,6 +36,8 @@ SQS message schema (outbound, to pipeline trigger):
     "alpr_raw":     {...}
   }
 """
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -158,11 +160,10 @@ def process_job(alpr: Alpr, message: dict) -> None:
     }
 
     # Publish result so the Step Functions trigger Lambda picks it up
-    sqs.send_message(
-        QueueUrl=RESULT_QUEUE_URL,
-        MessageBody=json.dumps(result),
-        MessageGroupId=camera_id if "fifo" in RESULT_QUEUE_URL else None or "default",
-    )
+    send_kwargs: dict = {"QueueUrl": RESULT_QUEUE_URL, "MessageBody": json.dumps(result)}
+    if ".fifo" in RESULT_QUEUE_URL:
+        send_kwargs["MessageGroupId"] = camera_id
+    sqs.send_message(**send_kwargs)
 
     # Delete the job message now that we've published a result
     sqs.delete_message(

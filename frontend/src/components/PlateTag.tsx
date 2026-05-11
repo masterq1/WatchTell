@@ -20,7 +20,7 @@ export function PlateTag({ plate, status, confidence }: Props) {
   return (
     <span
       className={`inline-flex items-center gap-1.5 font-mono text-sm px-2 py-0.5 rounded border ${cfg.classes}`}
-      title={`${status}${confidence !== undefined ? ` (${confidence.toFixed(0)}%)` : ''}`}
+      title={`${status}${confidence !== undefined ? ` (${Number(confidence).toFixed(0)}%)` : ''}`}
     >
       <span>{plate}</span>
       <span className="text-xs opacity-80">{cfg.label}</span>

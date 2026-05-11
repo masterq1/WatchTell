@@ -159,7 +159,7 @@ def capture_loop() -> None:
 
             now = time.monotonic()
             if (now - last_upload) >= MIN_INTERVAL_SEC and motion.has_motion(frame):
-                recorded_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
+                recorded_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                 try:
                     upload_and_enqueue(frame, recorded_at)
                     last_upload = now

@@ -4,6 +4,7 @@ import Hls from 'hls.js'
 interface Camera {
   id: string
   name: string
+  stream: string
 }
 
 function parseCameras(): Camera[] {
@@ -16,54 +17,88 @@ function parseCameras(): Camera[] {
 
 const CAMERAS = parseCameras()
 
+const GO2RTC_BASE = (import.meta.env.VITE_GO2RTC_URL ?? '').replace(/\/$/, '')
+
 interface HlsPlayerProps {
-  cameraId: string
+  stream: string
   onClick?: () => void
   className?: string
 }
 
-function HlsPlayer({ cameraId, onClick, className }: HlsPlayerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const hlsRef   = useRef<Hls | null>(null)
+function HlsPlayer({ stream, onClick, className }: HlsPlayerProps) {
+  const videoRef  = useRef<HTMLVideoElement>(null)
+  const hlsRef    = useRef<Hls | null>(null)
+  const retryRef  = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [error, setError] = useState(false)
 
   useEffect(() => {
-    const video = videoRef.current
-    if (!video) return
+    let destroyed = false
 
-    const src = `/hls/${cameraId}/index.m3u8`
+    function attach() {
+      const video = videoRef.current
+      if (!video || destroyed) return
 
-    if (Hls.isSupported()) {
-      const hls = new Hls({
-        backBufferLength: 10,
-        maxBufferLength: 15,
-        liveSyncDurationCount: 3,
-      })
-      hlsRef.current = hls
-      hls.loadSource(src)
-      hls.attachMedia(video)
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      setError(false)
+      // Each call re-fetches the master playlist → new go2rtc session ID
+      const src = `${GO2RTC_BASE}/stream.m3u8?src=${encodeURIComponent(stream)}`
+
+      if (Hls.isSupported()) {
+        hlsRef.current?.destroy()
+        const hls = new Hls({
+          backBufferLength: 10,
+          maxBufferLength: 20,
+          liveSyncDurationCount: 3,
+          manifestLoadingMaxRetry: 2,
+          levelLoadingMaxRetry: 2,
+        })
+        hlsRef.current = hls
+        hls.loadSource(src)
+        hls.attachMedia(video)
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          video.play().catch(() => {})
+        })
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (data.fatal && !destroyed) {
+            hls.destroy()
+            hlsRef.current = null
+            setError(true)
+            // Auto-retry after 5 s with a fresh session
+            retryRef.current = setTimeout(() => { if (!destroyed) attach() }, 5000)
+          }
+        })
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src
         video.play().catch(() => {})
-      })
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-      video.src = src
-      video.play().catch(() => {})
+      }
     }
 
+    attach()
+
     return () => {
+      destroyed = true
+      if (retryRef.current) clearTimeout(retryRef.current)
       hlsRef.current?.destroy()
       hlsRef.current = null
     }
-  }, [cameraId])
+  }, [stream])
 
   return (
-    <video
-      ref={videoRef}
-      muted
-      playsInline
-      autoPlay
-      onClick={onClick}
-      className={className}
-    />
+    <div className="relative w-full h-full">
+      <video
+        ref={videoRef}
+        muted
+        playsInline
+        autoPlay
+        onClick={onClick}
+        className={className}
+      />
+      {error && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center bg-charcoal-950/80 text-xs text-slate-400 gap-1">
+          <span>No signal</span>
+          <span className="text-slate-600">Retrying…</span>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -91,7 +126,7 @@ export function LiveFeed() {
                 className="aspect-video bg-charcoal-950 cursor-pointer relative group"
                 onClick={() => setExpanded(cam)}
               >
-                <HlsPlayer cameraId={cam.id} className="w-full h-full object-cover" />
+                <HlsPlayer stream={cam.stream} className="w-full h-full object-cover" />
                 <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-black/30 pointer-events-none">
                   <span className="text-white text-3xl">⛶</span>
                 </div>
@@ -119,7 +154,7 @@ export function LiveFeed() {
             </button>
             <div className="rounded-xl overflow-hidden shadow-2xl">
               <HlsPlayer
-                cameraId={expanded.id}
+                stream={expanded.stream}
                 className="w-full max-h-[80vh] object-contain bg-black"
               />
               <div className="px-4 py-2 bg-charcoal-900 text-xs text-slate-400 font-mono flex items-center gap-2">

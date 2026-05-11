@@ -34,8 +34,13 @@ def list_events(limit: int = 50, last_key: dict | None = None) -> dict:
         scan_kwargs["ExclusiveStartKey"] = last_key
 
     resp = events_table().scan(**scan_kwargs)
+    items = sorted(
+        resp.get("Items", []),
+        key=lambda x: x.get("Timestamp", ""),
+        reverse=True,
+    )
     return {
-        "items": resp.get("Items", []),
+        "items": items,
         "last_key": resp.get("LastEvaluatedKey"),
     }
 

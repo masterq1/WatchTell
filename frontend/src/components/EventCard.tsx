@@ -1,18 +1,56 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { format } from 'date-fns'
 import { PlateTag } from './PlateTag'
 import { VideoModal } from './VideoModal'
+import { api } from '@/lib/api'
 import type { PlateEvent } from '@/lib/types'
 
 interface Props {
   event: PlateEvent
 }
 
+/** Normalise timestamps that are missing colons: 2026-05-10T204912Z → 2026-05-10T20:49:12Z */
+function parseTimestamp(raw: string | undefined): Date | null {
+  if (!raw) return null
+  const normalised = raw.replace(/T(\d{2})(\d{2})(\d{2})Z$/, 'T$1:$2:$3Z')
+  const d = new Date(normalised)
+  return isNaN(d.getTime()) ? null : d
+}
+
+function Thumbnail({ s3Key }: { s3Key: string }) {
+  const [url, setUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api.clips.url(s3Key)
+      .then((data) => { if (!cancelled) setUrl(data.url) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [s3Key])
+
+  if (!url) {
+    return (
+      <div className="w-full h-full flex items-center justify-center">
+        <span className="text-slate-600 text-xs animate-pulse">▶</span>
+      </div>
+    )
+  }
+
+  return (
+    <img
+      src={url}
+      alt="Event keyframe"
+      className="w-full h-full object-cover"
+      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }}
+    />
+  )
+}
+
 export function EventCard({ event }: Props) {
   const [showVideo, setShowVideo] = useState(false)
 
-  const ts = new Date(event.Timestamp)
-  const dateStr = format(ts, 'MM-dd HH:mm')
+  const ts = parseTimestamp(event.Timestamp)
+  const dateStr = ts ? format(ts, 'MMM d, yyyy  HH:mm:ss') : '—'
 
   return (
     <>
@@ -24,13 +62,12 @@ export function EventCard({ event }: Props) {
         onKeyDown={(e) => { if (e.key === 'Enter') setShowVideo(true) }}
         aria-label={`Event: plate ${event.PlateNumber} at ${dateStr}`}
       >
-        {/* Thumbnail placeholder */}
-        <div className="w-16 h-10 rounded bg-charcoal-700 shrink-0 flex items-center justify-center text-slate-600 group-hover:text-slate-400 transition-colors overflow-hidden">
-          {event.S3Key ? (
-            <span className="text-xs">▶</span>
-          ) : (
-            <span className="text-xs">—</span>
-          )}
+        {/* Thumbnail */}
+        <div className="w-20 h-12 rounded bg-charcoal-800 shrink-0 overflow-hidden border border-charcoal-700">
+          {event.S3Key
+            ? <Thumbnail s3Key={event.S3Key} />
+            : <div className="w-full h-full flex items-center justify-center text-slate-600 text-xs">—</div>
+          }
         </div>
 
         {/* Info */}
@@ -41,11 +78,11 @@ export function EventCard({ event }: Props) {
             confidence={event.Confidence}
           />
           <div className="text-xs text-slate-500 mt-0.5 font-mono truncate">
-            {dateStr} · {event.CameraId} · {event.EventType}
+            {dateStr} · {event.CameraId}
           </div>
         </div>
 
-        {/* Status badge for stolen/flagged */}
+        {/* Alert badge */}
         {(event.ValidationStatus === 'stolen' || event.ValidationStatus === 'suspended') && (
           <span className="shrink-0 text-xs font-semibold px-1.5 py-0.5 rounded bg-red-900/50 text-red-400 border border-red-700">
             {event.ValidationStatus.toUpperCase()}

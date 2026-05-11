@@ -5,6 +5,11 @@ Pipeline flow:
   SQS message (ALPR result) → ParseResult → ValidatePlate → StoreEvent → CheckWatchlist → [Alert]
 """
 import json
+import os
+import shutil
+import subprocess
+import aws_cdk as cdk
+import jsii
 from aws_cdk import (
     Stack,
     Duration,
@@ -24,6 +29,28 @@ from constructs import Construct
 LAMBDA_RUNTIME = lambda_.Runtime.PYTHON_3_12
 LAMBDA_TIMEOUT = Duration.seconds(30)
 
+_API_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../api"))
+
+
+@jsii.implements(cdk.ILocalBundling)
+class _LocalPipBundler:
+    """Bundles Lambda code + pip dependencies locally (no Docker required)."""
+
+    def try_bundle(self, output_dir: str, _options=None, /, **_kwargs) -> bool:
+        subprocess.run(
+            ["pip", "install", "-r", "requirements.txt", "-t", output_dir, "--quiet"],
+            cwd=_API_DIR,
+            check=True,
+        )
+        for item in os.listdir(_API_DIR):
+            src = os.path.join(_API_DIR, item)
+            dst = os.path.join(output_dir, item)
+            if os.path.isdir(src):
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dst)
+        return True
+
 
 class PipelineStack(Stack):
     def __init__(
@@ -34,6 +61,7 @@ class PipelineStack(Stack):
         watchlist_table: dynamodb.Table,
         media_bucket: s3.Bucket,
         alpr_queue: sqs.Queue,
+        results_queue: sqs.Queue,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -123,10 +151,11 @@ class PipelineStack(Stack):
         state_machine.grant_start_execution(trigger_fn)
         trigger_fn.add_environment("STATE_MACHINE_ARN", state_machine.state_machine_arn)
 
-        # Wire SQS → trigger Lambda
+        # Wire results queue → trigger Lambda (separate from the job queue)
+        results_queue.grant_consume_messages(trigger_fn)
         trigger_fn.add_event_source(
             event_sources.SqsEventSource(
-                alpr_queue,
+                results_queue,
                 batch_size=1,
                 max_batching_window=Duration.seconds(0),
             )
@@ -138,7 +167,18 @@ class PipelineStack(Stack):
             function_name=f"watchtell-{name.lower().replace(' ', '-')}",
             runtime=LAMBDA_RUNTIME,
             handler=handler,
-            code=lambda_.Code.from_asset("../api"),
+            code=lambda_.Code.from_asset(
+                "../api",
+                bundling=cdk.BundlingOptions(
+                    image=LAMBDA_RUNTIME.bundling_image,
+                    command=[
+                        "bash", "-c",
+                        "pip install -r requirements.txt -t /asset-output --quiet"
+                        " && cp -r . /asset-output",
+                    ],
+                    local=_LocalPipBundler(),
+                ),
+            ),
             timeout=LAMBDA_TIMEOUT,
             environment=env,
             memory_size=256,
