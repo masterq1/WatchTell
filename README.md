@@ -21,7 +21,7 @@ stores events in DynamoDB, and alerts operators in real time when a flagged vehi
 
 <br/>
 
-[**Live Dashboard →**](https://dd11snhf0jiad.cloudfront.net)  &nbsp;|&nbsp;  [Architecture](#architecture)  &nbsp;|&nbsp;  [Quick Start](#quick-start)  &nbsp;|&nbsp;  [Configuration](#configuration)
+[**Live Dashboard →**](https://dd11snhf0jiad.cloudfront.net)  &nbsp;|&nbsp;  [**Project Page →**](https://masterq1.github.io/WatchTell/)  &nbsp;|&nbsp;  [Architecture](#architecture)  &nbsp;|&nbsp;  [Quick Start](#quick-start)  &nbsp;|&nbsp;  [Configuration](#configuration)
 
 </div>
 
