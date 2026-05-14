@@ -371,10 +371,10 @@ lib.dispose.restype           = None
 lib.dispose.argtypes          = [ctypes.c_void_p]
 lib.isLoaded.restype          = ctypes.c_bool
 lib.isLoaded.argtypes         = [ctypes.c_void_p]
-lib.recognizeFile.restype     = ctypes.c_char_p
+lib.recognizeFile.restype     = ctypes.c_void_p
 lib.recognizeFile.argtypes    = [ctypes.c_void_p, ctypes.c_char_p]
 lib.freeJsonMem.restype       = None
-lib.freeJsonMem.argtypes      = [ctypes.c_char_p]
+lib.freeJsonMem.argtypes      = [ctypes.c_void_p]
 lib.setTopN.restype           = None
 lib.setTopN.argtypes          = [ctypes.c_void_p, ctypes.c_int]
 lib.setDefaultRegion.restype  = None
@@ -389,9 +389,9 @@ class Alpr:
     def set_default_region(self, region):
         lib.setDefaultRegion(self._alpr, region.encode())
     def recognize_file(self, file_path):
-        result = lib.recognizeFile(self._alpr, file_path.encode())
-        data = json.loads(result.decode())
-        lib.freeJsonMem(result)
+        ptr = lib.recognizeFile(self._alpr, file_path.encode())
+        data = json.loads(ctypes.string_at(ptr).decode())
+        lib.freeJsonMem(ctypes.c_void_p(ptr))
         return data
     def unload(self):
         lib.dispose(self._alpr)
@@ -536,8 +536,9 @@ HLS_BUCKET=${HLS_BUCKET}
 HLS_URL=${HLS_URL}
 QUEUE_URL=${QUEUE_URL}
 AWS_REGION=${REGION}
-MOTION_THRESHOLD=2000
-MIN_INTERVAL_SEC=3
+MOTION_THRESHOLD=10000
+MIN_INTERVAL_SEC=1
+CAPTURE_FPS=3
 EOF
   chmod 600 "$WORKER_DIR/relay.env"
   cp "$WORKER_DIR/watchtell-relay.service" /etc/systemd/system/
