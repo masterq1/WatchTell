@@ -307,15 +307,102 @@ CEOF
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DCMAKE_INSTALL_SYSCONFDIR=/etc \
     -DWITH_PYTHON3=ON \
+    -DBUILD_TESTS=OFF \
     -DOpenCV_DIR="$OPENCV_CMAKE_DIR" \
     ..
-  make -j"$(nproc)"
-  make install
+  # Build only the targets we need — skip alpr/alprd CLI which fail on gcc11
+  make -j2 openalpr openalprpy openalprgo
+  # Install only the library targets
+  make install/fast 2>/dev/null || true
+  # Manually copy libs in case install/fast missed them
+  find /tmp/openalpr/src/build -name "libopenalpr*.so.2" -size +1k \
+    -exec cp {} /usr/lib/ \;
   ldconfig
+
+  # Write standard openalpr.conf (empty after cmake install on AL2023)
+  cat > /etc/openalpr/openalpr.conf << 'CONFEOF'
+runtime_dir = /usr/share/openalpr/runtime_data
+ocr_img_size_percent = 1.33333333
+state_id_img_size_percent = 2.0
+ocr_min_font_point = 6
+detector = lbpcpu
+detection_iteration_increase = 1.1
+detection_strictness = 3
+max_plate_width_percent = 100
+max_plate_height_percent = 100
+max_detection_input_width = 1280
+max_detection_input_height = 960
+contrast_detection_threshold = 0.3
+must_match_pattern =
+skip_detection = 0
+detection_mask_image =
+analysis_count = 2
+prewarp =
+max_plate_angle_degrees = 15
+postprocess_min_confidence = 60
+postprocess_confidence_skip_level = 80
+debug_general = 0
+debug_timing = 0
+debug_prewarp = 0
+debug_detector = 0
+debug_state_id = 0
+debug_plate_lines = 0
+debug_plate_corners = 0
+debug_char_segment = 0
+debug_char_analysis = 0
+debug_color_filter = 0
+debug_ocr = 0
+debug_postprocess = 0
+debug_show_images = 0
+debug_pause_on_frame = 0
+CONFEOF
+
+  # Copy fresh runtime_data from source (installed copy is often incomplete)
+  cp -r /tmp/openalpr/runtime_data/* /usr/share/openalpr/runtime_data/
+
+  # Write Python binding wrapper (correct function names for this build)
+  mkdir -p /usr/local/lib/python3.9/site-packages/openalpr
+  cat > /usr/local/lib/python3.9/site-packages/openalpr/openalpr.py << 'PYEOF'
+import ctypes, json
+lib = ctypes.cdll.LoadLibrary("/usr/lib/libopenalprpy.so.2")
+lib.initialize.restype        = ctypes.c_void_p
+lib.initialize.argtypes       = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+lib.dispose.restype           = None
+lib.dispose.argtypes          = [ctypes.c_void_p]
+lib.isLoaded.restype          = ctypes.c_bool
+lib.isLoaded.argtypes         = [ctypes.c_void_p]
+lib.recognizeFile.restype     = ctypes.c_char_p
+lib.recognizeFile.argtypes    = [ctypes.c_void_p, ctypes.c_char_p]
+lib.freeJsonMem.restype       = None
+lib.freeJsonMem.argtypes      = [ctypes.c_char_p]
+lib.setTopN.restype           = None
+lib.setTopN.argtypes          = [ctypes.c_void_p, ctypes.c_int]
+lib.setDefaultRegion.restype  = None
+lib.setDefaultRegion.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+class Alpr:
+    def __init__(self, country, config_file, runtime_dir):
+        self._alpr = lib.initialize(country.encode(), config_file.encode(), runtime_dir.encode())
+    def is_loaded(self):
+        return lib.isLoaded(self._alpr)
+    def set_top_n(self, n):
+        lib.setTopN(self._alpr, n)
+    def set_default_region(self, region):
+        lib.setDefaultRegion(self._alpr, region.encode())
+    def recognize_file(self, file_path):
+        result = lib.recognizeFile(self._alpr, file_path.encode())
+        data = json.loads(result.decode())
+        lib.freeJsonMem(result)
+        return data
+    def unload(self):
+        lib.dispose(self._alpr)
+PYEOF
+  cat > /usr/local/lib/python3.9/site-packages/openalpr/__init__.py << 'PYEOF'
+from .openalpr import Alpr
+PYEOF
+
   rm -rf /tmp/openalpr /tmp/log4cplus-* /tmp/leptonica-* /tmp/tesseract-* /tmp/opencv-*
-  command -v alpr \
-    && log "OpenALPR: $(alpr --version 2>&1 | head -1)" \
-    || fail "OpenALPR build finished but binary not found"
+  python3 -c "from openalpr import Alpr; a = Alpr('us', '/etc/openalpr/openalpr.conf', '/usr/share/openalpr/runtime_data'); assert a.is_loaded(), 'OpenALPR failed to load'"
+  log "OpenALPR Python binding loaded successfully"
 else
   log "OpenALPR already installed: $(alpr --version 2>&1 | head -1)"
 fi
@@ -409,6 +496,9 @@ RESULT_QUEUE_URL=${RESULT_QUEUE_URL}
 MEDIA_BUCKET=${MEDIA_BUCKET}
 ALPR_COUNTRY=us
 ALPR_TOP_N=5
+MOTION_THRESHOLD=10000
+MIN_INTERVAL_SEC=1
+CAPTURE_FPS=3
 EOF
 chmod 600 /etc/watchtell/worker.env
 
