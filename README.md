@@ -427,6 +427,8 @@ SQS Results Queue
 
 ## Operator Dashboard
 
+![WatchTell Dashboard](docs/screenshot.png)
+
 The React SPA at `https://<cloudfront-id>.cloudfront.net` provides:
 
 | Page | Description |
