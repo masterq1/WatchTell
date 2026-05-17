@@ -334,10 +334,11 @@ class SingleStack(Stack):
             ))
         return writers
 
-    def _lambda(self, name: str, handler: str, env: dict) -> lambda_.Function:
+    def _lambda(self, name: str, handler: str, env: dict, function_name: str | None = None) -> lambda_.Function:
         return lambda_.Function(
             self,
             name,
+            function_name=function_name,
             runtime=LAMBDA_RUNTIME,
             handler=handler,
             code=lambda_.Code.from_asset(
@@ -373,9 +374,12 @@ class SingleStack(Stack):
             "ALERTS_TOPIC_ARN": alerts_topic.topic_arn,
         }
 
-        parse_fn = self._lambda("ParseResult", "pipeline/parse_result.handler", shared_env)
-        validate_fn = self._lambda(
-            "ValidatePlate",
+        normalize_plate_fn = self._lambda(
+            "NormalizePlateReading", "pipeline/parse_result.handler", shared_env,
+            function_name="watchtell-normalize-plate-reading",
+        )
+        lookup_registration_fn = self._lambda(
+            "LookUpPlateRegistration",
             "pipeline/validate_plate.handler",
             {
                 **shared_env,
@@ -383,37 +387,48 @@ class SingleStack(Stack):
                 "UPSTASH_REDIS_TOKEN": "{{resolve:ssm:/watchtell/upstash/token}}",
                 "SEARCHQUARRY_API_KEY": "{{resolve:ssm:/watchtell/searchquarry/api_key}}",
             },
+            function_name="watchtell-lookup-plate-registration",
         )
         for writer in self._settings_writers:
-            validate_fn.node.add_dependency(writer)
-        store_fn = self._lambda("StoreEvent", "pipeline/store_event.handler", shared_env)
-        alert_fn = self._lambda("CheckWatchlist", "pipeline/check_watchlist.handler", shared_env)
-        trigger_fn = self._lambda("SqsTrigger", "pipeline/sqs_trigger.handler", shared_env)
+            lookup_registration_fn.node.add_dependency(writer)
+        record_detection_fn = self._lambda(
+            "RecordDetectionEvent", "pipeline/store_event.handler", shared_env,
+            function_name="watchtell-record-detection-event",
+        )
+        screen_against_watchlist_fn = self._lambda(
+            "ScreenAgainstWatchlist", "pipeline/check_watchlist.handler", shared_env,
+            function_name="watchtell-screen-against-watchlist",
+        )
+        alpr_result_router_fn = self._lambda(
+            "AlprResultRouter", "pipeline/sqs_trigger.handler", shared_env,
+            function_name="watchtell-alpr-result-router",
+        )
 
-        events_table.grant_read_write_data(store_fn)
-        events_table.grant_read_write_data(trigger_fn)
-        watchlist_table.grant_read_data(alert_fn)
-        watchlist_table.grant_read_data(trigger_fn)
-        media_bucket.grant_read_write(parse_fn)
-        alerts_topic.grant_publish(alert_fn)
+        events_table.grant_read_write_data(record_detection_fn)
+        events_table.grant_read_write_data(alpr_result_router_fn)
+        watchlist_table.grant_read_data(screen_against_watchlist_fn)
+        watchlist_table.grant_read_data(alpr_result_router_fn)
+        media_bucket.grant_read_write(normalize_plate_fn)
+        alerts_topic.grant_publish(screen_against_watchlist_fn)
 
         definition = (
-            tasks.LambdaInvoke(self, "ParseResultTask", lambda_function=parse_fn, output_path="$.Payload")
-            .next(tasks.LambdaInvoke(self, "ValidatePlateTask", lambda_function=validate_fn, output_path="$.Payload"))
-            .next(tasks.LambdaInvoke(self, "StoreEventTask", lambda_function=store_fn, output_path="$.Payload"))
-            .next(tasks.LambdaInvoke(self, "CheckWatchlistTask", lambda_function=alert_fn, output_path="$.Payload"))
+            tasks.LambdaInvoke(self, "NormalizePlateReadingStep", lambda_function=normalize_plate_fn, output_path="$.Payload")
+            .next(tasks.LambdaInvoke(self, "LookUpPlateRegistrationStep", lambda_function=lookup_registration_fn, output_path="$.Payload"))
+            .next(tasks.LambdaInvoke(self, "RecordDetectionEventStep", lambda_function=record_detection_fn, output_path="$.Payload"))
+            .next(tasks.LambdaInvoke(self, "ScreenAgainstWatchlistStep", lambda_function=screen_against_watchlist_fn, output_path="$.Payload"))
         )
         state_machine = sfn.StateMachine(
             self,
-            "Pipeline",
+            "AlprDetectionPipeline",
+            state_machine_name="watchtell-alpr-detection-pipeline",
             definition_body=sfn.DefinitionBody.from_chainable(definition),
             timeout=Duration.minutes(5),
         )
 
-        state_machine.grant_start_execution(trigger_fn)
-        trigger_fn.add_environment("STATE_MACHINE_ARN", state_machine.state_machine_arn)
-        results_queue.grant_consume_messages(trigger_fn)
-        trigger_fn.add_event_source(
+        state_machine.grant_start_execution(alpr_result_router_fn)
+        alpr_result_router_fn.add_environment("STATE_MACHINE_ARN", state_machine.state_machine_arn)
+        results_queue.grant_consume_messages(alpr_result_router_fn)
+        alpr_result_router_fn.add_event_source(
             event_sources.SqsEventSource(
                 results_queue,
                 batch_size=1,

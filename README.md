@@ -86,10 +86,10 @@ flowchart TD
     SQS2["📨 SQS\nResults Queue"]
     TRIG["λ SQS Trigger\nLambda"]
     SF["🔄 Step Functions\nPipeline"]
-    PARSE["λ ParseResult"]
-    VALID["λ ValidatePlate\n(SearchQuarry + Redis)"]
-    STORE["λ StoreEvent"]
-    CHECK["λ CheckWatchlist"]
+    PARSE["λ NormalizePlateReading"]
+    VALID["λ LookUpPlateRegistration\n(SearchQuarry + Redis)"]
+    STORE["λ RecordDetectionEvent"]
+    CHECK["λ ScreenAgainstWatchlist"]
     DDB["🗄️ DynamoDB\nEvents Table"]
     WL["🗄️ DynamoDB\nWatchlist Table"]
     SNS["🔔 SNS\nAlert Email"]
@@ -398,17 +398,17 @@ Each ALPR result flows through an AWS Step Functions Express Workflow:
 SQS Results Queue
       │
       ▼
-  SqsTrigger Lambda  ──▶  StartExecution
+  AlprResultRouter   ──▶  StartExecution
                                 │
                ┌────────────────┼────────────────┐
                ▼                ▼                ▼
-          ParseResult     ValidatePlate      (error → DLQ)
+    NormalizePlateReading  LookUpPlateRegistration  (error → DLQ)
                │                │
                ▼                ▼
-          StoreEvent    ←── (plate status)
+     RecordDetectionEvent ←── (plate status)
                │
                ▼
-         CheckWatchlist
+     ScreenAgainstWatchlist
                │
          ┌─────┴─────┐
          ▼           ▼
@@ -418,10 +418,10 @@ SQS Results Queue
 
 | Step | Lambda | What it does |
 |---|---|---|
-| **ParseResult** | `api/pipeline/parse_result.py` | Normalises plate text (strip spaces, upper-case, region handling) |
-| **ValidatePlate** | `api/pipeline/validate_plate.py` | Calls SearchQuarry API; caches result in Upstash Redis for 24 h |
-| **StoreEvent** | `api/pipeline/store_event.py` | Writes event to DynamoDB with all metadata |
-| **CheckWatchlist** | `api/pipeline/check_watchlist.py` | Queries watchlist table; publishes SNS message on match |
+| **NormalizePlateReading** | `api/pipeline/parse_result.py` | Normalises plate text (strip spaces, upper-case, region handling) |
+| **LookUpPlateRegistration** | `api/pipeline/validate_plate.py` | Calls SearchQuarry API; caches result in Upstash Redis for 24 h |
+| **RecordDetectionEvent** | `api/pipeline/store_event.py` | Writes event to DynamoDB with all metadata |
+| **ScreenAgainstWatchlist** | `api/pipeline/check_watchlist.py` | Queries watchlist table; publishes SNS message on match |
 
 ---
 

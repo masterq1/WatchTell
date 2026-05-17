@@ -809,10 +809,10 @@ footer {
       <div style="grid-column:3; background: var(--card); border:1px solid rgba(245,158,11,0.3); border-radius:8px; padding:16px;">
         <div style="font-family:var(--mono);font-size:10px;font-weight:700;color:var(--amber);letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px;text-align:center;">⚡ Step Functions Pipeline</div>
         <div style="display:flex;flex-direction:column;gap:4px;">
-          <div class="stepfn-step"><span class="step-num">1</span>ParseResult — normalise plate text</div>
-          <div class="stepfn-step"><span class="step-num">2</span>ValidatePlate — SearchQuarry + Redis cache</div>
-          <div class="stepfn-step"><span class="step-num">3</span>StoreEvent — write to DynamoDB</div>
-          <div class="stepfn-step"><span class="step-num">4</span>CheckWatchlist — SNS alert on hit</div>
+          <div class="stepfn-step"><span class="step-num">1</span>NormalizePlateReading — clean &amp; normalise text</div>
+          <div class="stepfn-step"><span class="step-num">2</span>LookUpPlateRegistration — SearchQuarry + Redis cache</div>
+          <div class="stepfn-step"><span class="step-num">3</span>RecordDetectionEvent — write to DynamoDB</div>
+          <div class="stepfn-step"><span class="step-num">4</span>ScreenAgainstWatchlist — SNS alert on hit</div>
         </div>
       </div>
 
